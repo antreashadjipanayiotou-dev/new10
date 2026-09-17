@@ -1,51 +1,119 @@
 name: Build Android APK
 
 on:
-  push:
-    branches: [ "main", "master" ]
   workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    name: Build Android APK
+    runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Set up JDK 17
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          distribution: temurin
+          java-version: "17"
 
-      - name: Install Dependencies
-        run: npm install
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+          cache-disabled: true
 
-      - name: Ensure Web Assets Exist
+      - name: Find ZIP
+        shell: bash
         run: |
-          mkdir -p www
-          if [ ! -f www/index.html ]; then
-            echo '<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Lyrics App</title></head><body><h1>My Lyrics App</h1></body></html>' > www/index.html
+          set -e
+
+          ZIP_FILE=$(find . -type f -name "*.zip" ! -path "./.git/*" | head -n 1)
+
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No ZIP file found."
+            exit 1
           fi
 
-      - name: Add Android Platform
-        run: npx cap add android || true
+          echo "ZIP found: $ZIP_FILE"
+          echo "ZIP_FILE=$ZIP_FILE" >> "$GITHUB_ENV"
 
-      - name: Sync Capacitor
-        run: npx cap sync android
+      - name: Extract ZIP
+        shell: bash
+        run: |
+          set -e
 
-      - name: Build Android APK
-        working-directory: ./android
-        run: ./gradlew assembleDebug
+          rm -rf android_project
+          mkdir android_project
 
-      - name: Upload APK Artifact
+          unzip -q "$ZIP_FILE" -d android_project
+
+          echo "ZIP extracted."
+
+      - name: Find Android project
+        shell: bash
+        run: |
+          set -e
+
+          SETTINGS=$(find android_project \
+            -type f \
+            \( -name "settings.gradle" -o -name "settings.gradle.kts" \) \
+            | head -n 1)
+
+          if [ -z "$SETTINGS" ]; then
+            echo "ERROR: Android project not found."
+            echo "Files inside ZIP:"
+            find android_project -type f
+            exit 1
+          fi
+
+          PROJECT_DIR=$(dirname "$SETTINGS")
+
+          echo "Android project found at:"
+          echo "$PROJECT_DIR"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Build APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -e
+
+          echo "Starting Android build..."
+
+          gradle \
+            --no-daemon \
+            --no-parallel \
+            --max-workers=1 \
+            :app:assembleDebug \
+            --stacktrace \
+            --console=plain
+
+      - name: Check APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -e
+
+          if [ ! -f app/build/outputs/apk/debug/app-debug.apk ]; then
+            echo "ERROR: APK was not created."
+            exit 1
+          fi
+
+          echo "APK CREATED SUCCESSFULLY!"
+          ls -lh app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk
+          name: AndreasHadji-debug-apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
